@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 from io import BytesIO
+from datetime import datetime
 
 # === Streamlit Config ===
 st.set_page_config(page_title="KNCCI TA Microdata Dashboard", layout="wide")
@@ -10,13 +11,15 @@ st.title("📊 Jiinue Growth Program - Microdata Summary Dashboard")
 sheet_url = "https://docs.google.com/spreadsheets/d/1LDPRGnR5jlzIMP6RJ9gAcB5m91OO_Wf_1_4liYtVPYM/edit?usp=sharing"
 csv_url = sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
 
-# === 2. Load data ===
+# === 2. Load Data ===
 df = pd.read_csv(csv_url)
 df.columns = df.columns.str.strip()
 
-# === 3. Remove duplicates ===
+# === 3. Calculate Duplicates Before Cleaning ===
+initial_count = len(df)
 df_clean = df.drop_duplicates(subset=['WHAT IS YOUR NATIONAL ID?', 'Business phone number'], keep='first')
-st.success(f"✅ Duplicate removal complete. Cleaned records: {len(df_clean)} (from {len(df)} original)")
+cleaned_count = len(df_clean)
+duplicates_removed = initial_count - cleaned_count
 
 # === 4. Clean and enrich columns ===
 df_clean['Age of owner (full years)'] = pd.to_numeric(df_clean['Age of owner (full years)'], errors='coerce')
@@ -35,7 +38,7 @@ else:
     df_clean['PWD Status'] = 'Unspecified'
 
 # === 5. Compute General Summaries ===
-total_participants = len(df_clean)
+total_participants = cleaned_count
 total_youth = len(df_clean[df_clean['Age Group'] == 'Youth (18–35)'])
 total_adults = len(df_clean[df_clean['Age Group'] == 'Adult (36+)'])
 female_count = len(df_clean[df_clean['Gender of owner'].str.lower().str.contains('female', na=False)])
@@ -48,11 +51,18 @@ pwd_pct = (pwd_count / total_participants) * 100 if total_participants else 0
 
 # === 6. Display General Summary Cards ===
 st.markdown("## 🧾 General Summary")
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Participants", total_participants)
-col2.metric("Youth (18–35)", f"{total_youth} ({youth_pct:.1f}%)")
-col3.metric("Female Participants", f"{female_count} ({female_pct:.1f}%)")
-col4.metric("PWD Participants", f"{pwd_count} ({pwd_pct:.1f}%)")
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Total Records (Before Cleaning)", initial_count)
+col2.metric("Cleaned Participants", total_participants)
+col3.metric("Duplicates Removed", duplicates_removed)
+col4.metric("Youth (18–35)", f"{total_youth} ({youth_pct:.1f}%)")
+col5.metric("PWD Participants", f"{pwd_count} ({pwd_pct:.1f}%)")
+
+col6, col7 = st.columns(2)
+col6.metric("Female Participants", f"{female_count} ({female_pct:.1f}%)")
+col7.metric("Adult (36+)", total_adults)
+
+st.caption(f"⏱️ Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 # === 7. Generate County Summaries ===
 county_summary = df_clean['Business Location'].value_counts().reset_index()
