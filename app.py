@@ -155,7 +155,7 @@ st.download_button(
 st.markdown("## 📊 Visual Insights")
 st.bar_chart(data=county_summary.set_index('County'))
 st.bar_chart(data=df_clean['Gender of owner'].value_counts())
-st.bar_chart(data=df_clean['Age Group'].value_counts())
+st.bar_chart(data=df_clean['Age Group'].value_counts()) 
 st.bar_chart(data=df_clean['PWD Status'].value_counts())
 
 # === 13. All-in-One Excel (All Sheets Combined) ===
