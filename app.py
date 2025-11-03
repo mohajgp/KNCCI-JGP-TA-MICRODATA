@@ -72,6 +72,29 @@ gender_summary = df_clean.groupby(['Business Location', 'Gender of owner']).size
 age_summary = df_clean.groupby(['Business Location', 'Age Group']).size().reset_index(name='Count')
 pwd_summary = df_clean.groupby(['Business Location', 'PWD Status']).size().reset_index(name='Count')
 
+# === 7B. Data Quality Check: National ID Validation ===
+st.markdown("## ⚠️ Data Quality Check – National IDs with 9+ Digits")
+df_clean['WHAT IS YOUR NATIONAL ID?'] = df_clean['WHAT IS YOUR NATIONAL ID?'].astype(str).str.strip()
+
+df_invalid_ids = df_clean[
+    df_clean['WHAT IS YOUR NATIONAL ID?'].str.isdigit() &
+    (df_clean['WHAT IS YOUR NATIONAL ID?'].str.len() > 8)
+]
+
+invalid_count = len(df_invalid_ids)
+if invalid_count > 0:
+    st.warning(f"{invalid_count} record(s) found with 9-digit or longer National IDs.")
+    st.dataframe(df_invalid_ids[['Participant Name', 'WHAT IS YOUR NATIONAL ID?', 'Business Location']])
+    
+    st.download_button(
+        label="⬇️ Download Invalid ID Records (.xlsx)",
+        data=lambda: df_to_excel_bytes(df_invalid_ids),
+        file_name="Invalid_IDs.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+else:
+    st.success("✅ All National IDs appear to have valid length (8 digits or fewer).")
+
 # === Helper: Convert any DataFrame to Excel bytes ===
 def df_to_excel_bytes(df):
     output = BytesIO()
@@ -139,7 +162,8 @@ excel_all = all_to_excel({
     "County_Summary": county_summary,
     "Gender_Summary": gender_summary,
     "Age_Group_Summary": age_summary,
-    "PWD_Summary": pwd_summary
+    "PWD_Summary": pwd_summary,
+    "Invalid_IDs": df_invalid_ids
 })
 
 st.markdown("### 💾 Combined Download")
