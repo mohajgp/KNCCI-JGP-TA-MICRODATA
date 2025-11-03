@@ -23,6 +23,7 @@ duplicates_removed = initial_count - cleaned_count
 
 # === 4. Enrich Columns ===
 df_clean['Age of owner (full years)'] = pd.to_numeric(df_clean['Age of owner (full years)'], errors='coerce')
+
 df_clean['Age Group'] = df_clean['Age of owner (full years)'].apply(
     lambda x: 'Youth (18–35)' if 18 <= x <= 35 else ('Adult (36+)' if pd.notnull(x) and x > 35 else 'Unknown')
 )
@@ -71,45 +72,12 @@ gender_summary = df_clean.groupby(['Business Location', 'Gender of owner']).size
 age_summary = df_clean.groupby(['Business Location', 'Age Group']).size().reset_index(name='Count')
 pwd_summary = df_clean.groupby(['Business Location', 'PWD Status']).size().reset_index(name='Count')
 
-# === 7B. Data Quality Check: National ID Validation ===
-st.markdown("## ⚠️ Data Quality Check – National IDs with 9+ Digits")
-df_clean['WHAT IS YOUR NATIONAL ID?'] = df_clean['WHAT IS YOUR NATIONAL ID?'].astype(str).str.strip()
-
-df_invalid_ids = df_clean[
-    df_clean['WHAT IS YOUR NATIONAL ID?'].str.isdigit() &
-    (df_clean['WHAT IS YOUR NATIONAL ID?'].str.len() > 8)
-]
-
-invalid_count = len(df_invalid_ids)
-
 # === Helper: Convert any DataFrame to Excel bytes ===
 def df_to_excel_bytes(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
     return output.getvalue()
-
-if invalid_count > 0:
-    county_with_invalid = df_invalid_ids['Business Location'].nunique()
-    st.warning(f"{invalid_count} record(s) found with 9-digit or longer National IDs across {county_with_invalid} county(ies).")
-    
-    # List counties
-    affected_counties = df_invalid_ids['Business Location'].dropna().unique()
-    st.markdown("**Affected Counties:** " + ", ".join(sorted(affected_counties)))
-    
-    # Display table
-    st.dataframe(df_invalid_ids[['Participant Name', 'WHAT IS YOUR NATIONAL ID?', 'Business Location']])
-
-    # Download button (fixed)
-    invalid_excel = df_to_excel_bytes(df_invalid_ids)
-    st.download_button(
-        label="⬇️ Download Invalid ID Records (.xlsx)",
-        data=invalid_excel,
-        file_name="Invalid_IDs.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-else:
-    st.success("✅ All National IDs appear to have valid length (8 digits or fewer).")
 
 # === 8. County Summary ===
 st.markdown("## 📍 County-Level Summary")
@@ -155,7 +123,7 @@ st.download_button(
 st.markdown("## 📊 Visual Insights")
 st.bar_chart(data=county_summary.set_index('County'))
 st.bar_chart(data=df_clean['Gender of owner'].value_counts())
-st.bar_chart(data=df_clean['Age Group'].value_counts()) 
+st.bar_chart(data=df_clean['Age Group'].value_counts())
 st.bar_chart(data=df_clean['PWD Status'].value_counts())
 
 # === 13. All-in-One Excel (All Sheets Combined) ===
@@ -171,8 +139,7 @@ excel_all = all_to_excel({
     "County_Summary": county_summary,
     "Gender_Summary": gender_summary,
     "Age_Group_Summary": age_summary,
-    "PWD_Summary": pwd_summary,
-    "Invalid_IDs": df_invalid_ids
+    "PWD_Summary": pwd_summary
 })
 
 st.markdown("### 💾 Combined Download")
