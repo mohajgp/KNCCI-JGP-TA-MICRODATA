@@ -15,13 +15,32 @@ csv_url = sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
 df = pd.read_csv(csv_url)
 df.columns = df.columns.str.strip()
 
-# === 3. Calculate Duplicates ===
+# Ensure date column exists and is parsed
+if 'Timestamp' in df.columns:
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+elif 'Training date' in df.columns:
+    df['Timestamp'] = pd.to_datetime(df['Training date'], errors='coerce')
+else:
+    df['Timestamp'] = pd.NaT
+
+# === 3. Sidebar Filters ===
+st.sidebar.header("📅 Date Filters")
+min_date = df['Timestamp'].min()
+max_date = df['Timestamp'].max()
+
+start_date = st.sidebar.date_input("Start Date", min_date.date() if pd.notnull(min_date) else datetime.now().date())
+end_date = st.sidebar.date_input("End Date", max_date.date() if pd.notnull(max_date) else datetime.now().date())
+
+# Filter by date
+df = df[(df['Timestamp'].dt.date >= start_date) & (df['Timestamp'].dt.date <= end_date)]
+
+# === 4. Clean Duplicates ===
 initial_count = len(df)
 df_clean = df.drop_duplicates(subset=['WHAT IS YOUR NATIONAL ID?', 'Business phone number'], keep='first')
 cleaned_count = len(df_clean)
 duplicates_removed = initial_count - cleaned_count
 
-# === 4. Enrich Columns ===
+# === 5. Enrich Columns ===
 df_clean['Age of owner (full years)'] = pd.to_numeric(df_clean['Age of owner (full years)'], errors='coerce')
 
 df_clean['Age Group'] = df_clean['Age of owner (full years)'].apply(
@@ -37,19 +56,18 @@ if pwd_col in df_clean.columns:
 else:
     df_clean['PWD Status'] = 'Unspecified'
 
-# === 5. General Summaries ===
+# === 6. General Summaries ===
 total_participants = cleaned_count
 total_youth = len(df_clean[df_clean['Age Group'] == 'Youth (18–35)'])
 total_adults = len(df_clean[df_clean['Age Group'] == 'Adult (36+)'])
 female_count = len(df_clean[df_clean['Gender of owner'].str.lower().str.contains('female', na=False)])
 pwd_count = len(df_clean[df_clean['PWD Status'] == 'Yes'])
 
-# Percentages
 youth_pct = (total_youth / total_participants) * 100 if total_participants else 0
 female_pct = (female_count / total_participants) * 100 if total_participants else 0
 pwd_pct = (pwd_count / total_participants) * 100 if total_participants else 0
 
-# === 6. Display General Summary ===
+# === 7. Display General Summary ===
 st.markdown("## 🧾 General Summary")
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Total Records (Before Cleaning)", initial_count)
@@ -62,9 +80,9 @@ col6, col7 = st.columns(2)
 col6.metric("Female Participants", f"{female_count} ({female_pct:.1f}%)")
 col7.metric("Adult (36+)", total_adults)
 
-st.caption(f"⏱️ Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"⏱️ Data Filter: {start_date} to {end_date} | Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-# === 7. Generate Summaries ===
+# === 8. Summaries by County ===
 county_summary = df_clean['Business Location'].value_counts().reset_index()
 county_summary.columns = ['County', 'Count']
 
@@ -72,61 +90,38 @@ gender_summary = df_clean.groupby(['Business Location', 'Gender of owner']).size
 age_summary = df_clean.groupby(['Business Location', 'Age Group']).size().reset_index(name='Count')
 pwd_summary = df_clean.groupby(['Business Location', 'PWD Status']).size().reset_index(name='Count')
 
-# === Helper: Convert any DataFrame to Excel bytes ===
+# === Helper: Convert to Excel Bytes ===
 def df_to_excel_bytes(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
     return output.getvalue()
 
-# === 8. County Summary ===
+# === 9. Downloadable Summaries ===
 st.markdown("## 📍 County-Level Summary")
 st.dataframe(county_summary)
-st.download_button(
-    label="⬇️ Download County Summary (.xlsx)",
-    data=df_to_excel_bytes(county_summary),
-    file_name="County_Summary.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+st.download_button("⬇️ Download County Summary (.xlsx)", df_to_excel_bytes(county_summary), "County_Summary.xlsx")
 
-# === 9. Gender Summary ===
 st.markdown("### 👩‍💼 Gender Distribution per County")
 st.dataframe(gender_summary)
-st.download_button(
-    label="⬇️ Download Gender Summary (.xlsx)",
-    data=df_to_excel_bytes(gender_summary),
-    file_name="Gender_Summary.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+st.download_button("⬇️ Download Gender Summary (.xlsx)", df_to_excel_bytes(gender_summary), "Gender_Summary.xlsx")
 
-# === 10. Age Summary ===
 st.markdown("### 🧑‍💻 Age Group Distribution (Youth vs Adult)")
 st.dataframe(age_summary)
-st.download_button(
-    label="⬇️ Download Age Group Summary (.xlsx)",
-    data=df_to_excel_bytes(age_summary),
-    file_name="Age_Group_Summary.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+st.download_button("⬇️ Download Age Summary (.xlsx)", df_to_excel_bytes(age_summary), "Age_Summary.xlsx")
 
-# === 11. PWD Summary ===
 st.markdown("### ♿ Persons with Disabilities (PWD) Summary")
 st.dataframe(pwd_summary)
-st.download_button(
-    label="⬇️ Download PWD Summary (.xlsx)",
-    data=df_to_excel_bytes(pwd_summary),
-    file_name="PWD_Summary.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+st.download_button("⬇️ Download PWD Summary (.xlsx)", df_to_excel_bytes(pwd_summary), "PWD_Summary.xlsx")
 
-# === 12. Charts ===
+# === 10. Charts ===
 st.markdown("## 📊 Visual Insights")
 st.bar_chart(data=county_summary.set_index('County'))
 st.bar_chart(data=df_clean['Gender of owner'].value_counts())
 st.bar_chart(data=df_clean['Age Group'].value_counts())
 st.bar_chart(data=df_clean['PWD Status'].value_counts())
 
-# === 13. All-in-One Excel (All Sheets Combined) ===
+# === 11. Combined Excel Download ===
 def all_to_excel(dfs: dict):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
