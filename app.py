@@ -34,27 +34,13 @@ end_date = st.sidebar.date_input("End Date", max_date.date() if pd.notnull(max_d
 # Filter by date
 df = df[(df['Timestamp'].dt.date >= start_date) & (df['Timestamp'].dt.date <= end_date)]
 
-# === 4. High-Level Cleaning (Non-Aggressive) ===
+# === 4. High-Level Cleaning (keep duplicates for audit) ===
 initial_count = len(df)
 df_clean = df.drop_duplicates(subset=['WHAT IS YOUR NATIONAL ID?', 'Business phone number'], keep='first')
 cleaned_count = len(df_clean)
 duplicates_removed = initial_count - cleaned_count
 
-# === 5. Partial Duplicates Audit ===
-id_col = 'WHAT IS YOUR NATIONAL ID?'
-phone_col = 'Business phone number'
-
-# Same ID, different phones
-id_groups = df_clean.groupby(id_col)[phone_col].nunique()
-ids_with_multiple_phones = id_groups[id_groups > 1].index.tolist()
-same_id_diff_phone = df_clean[df_clean[id_col].isin(ids_with_multiple_phones)].sort_values(by=id_col)
-
-# Same phone, different IDs
-phone_groups = df_clean.groupby(phone_col)[id_col].nunique()
-phones_with_multiple_ids = phone_groups[phone_groups > 1].index.tolist()
-same_phone_diff_id = df_clean[df_clean[phone_col].isin(phones_with_multiple_ids)].sort_values(by=phone_col)
-
-# === 6. Enrich Columns ===
+# === 5. Enrich Columns ===
 df_clean['Age of owner (full years)'] = pd.to_numeric(df_clean['Age of owner (full years)'], errors='coerce')
 
 df_clean['Age Group'] = df_clean['Age of owner (full years)'].apply(
@@ -64,14 +50,15 @@ df_clean['Age Group'] = df_clean['Age of owner (full years)'].apply(
 pwd_col = 'DO YOU IDENTIFY AS A PERSON WITH A DISABILITY? (THIS QUESTION IS OPTIONAL AND YOUR RESPONSE WILL NOT AFFECT YOUR ELIGIBILITY FOR THE PROGRAM.)'
 if pwd_col in df_clean.columns:
     df_clean[pwd_col] = df_clean[pwd_col].astype(str).str.strip().str.lower()
-    df_clean['PWD Status'] = df_clean[pwd_col].apply(lambda x: 'Yes' if 'yes' in x else ('No' if 'no' in x else 'Unspecified'))
+    df_clean['PWD Status'] = df_clean[pwd_col].apply(
+        lambda x: 'Yes' if 'yes' in x else ('No' if 'no' in x else 'Unspecified')
+    )
 else:
     df_clean['PWD Status'] = 'Unspecified'
 
-# Normalize gender
-df_clean['gender_norm'] = df_clean['Gender of owner'].astype(str).str.lower().str.strip()
+df_clean['gender_norm'] = df_clean['Gender of owner'].str.lower().str.strip()
 
-# === 7. Summary Metrics ===
+# === 6. General Summaries ===
 total_participants = cleaned_count
 total_youth = len(df_clean[df_clean['Age Group'] == 'Youth (18–35)'])
 total_adults = len(df_clean[df_clean['Age Group'] == 'Adult (36+)'])
@@ -82,17 +69,18 @@ youth_pct = (total_youth / total_participants) * 100 if total_participants else 
 female_pct = (female_count / total_participants) * 100 if total_participants else 0
 pwd_pct = (pwd_count / total_participants) * 100 if total_participants else 0
 
-# Young/Adult breakdown by gender
+# === 7. TA Breakdown by Gender & Age ===
 youth_female = len(df_clean[(df_clean['Age Group'] == 'Youth (18–35)') & (df_clean['gender_norm'].str.contains('female', na=False))])
 youth_male = len(df_clean[(df_clean['Age Group'] == 'Youth (18–35)') & (df_clean['gender_norm'].str.contains('male', na=False))])
 adult_female = len(df_clean[(df_clean['Age Group'] == 'Adult (36+)') & (df_clean['gender_norm'].str.contains('female', na=False))])
 adult_male = len(df_clean[(df_clean['Age Group'] == 'Adult (36+)') & (df_clean['gender_norm'].str.contains('male', na=False))])
+
 pwd_young_female = len(df_clean[(df_clean['Age Group'] == 'Youth (18–35)') & (df_clean['gender_norm'].str.contains('female', na=False)) & (df_clean['PWD Status'] == 'Yes')])
 pwd_young_male = len(df_clean[(df_clean['Age Group'] == 'Youth (18–35)') & (df_clean['gender_norm'].str.contains('male', na=False)) & (df_clean['PWD Status'] == 'Yes')])
 pwd_adult_female = len(df_clean[(df_clean['Age Group'] == 'Adult (36+)') & (df_clean['gender_norm'].str.contains('female', na=False)) & (df_clean['PWD Status'] == 'Yes')])
 pwd_adult_male = len(df_clean[(df_clean['Age Group'] == 'Adult (36+)') & (df_clean['gender_norm'].str.contains('male', na=False)) & (df_clean['PWD Status'] == 'Yes')])
 
-# === 8. Display General Summary ===
+# === 8. Display Metrics ===
 st.markdown("## 🧾 General Summary")
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Total Records (Before Cleaning)", initial_count)
@@ -100,11 +88,13 @@ col2.metric("Cleaned Participants", total_participants)
 col3.metric("Duplicates Removed", duplicates_removed)
 col4.metric("Youth (18–35)", f"{total_youth} ({youth_pct:.1f}%)")
 col5.metric("PWD Participants", f"{pwd_count} ({pwd_pct:.1f}%)")
+
 col6, col7 = st.columns(2)
 col6.metric("Female Participants", f"{female_count} ({female_pct:.1f}%)")
 col7.metric("Adult (36+)", total_adults)
 
-# TA Breakdown Summary
+st.caption(f"⏱️ Data Filter: {start_date} to {end_date} | Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
 st.markdown("## 📌 TA Breakdown Summary (Youth, Adults & PWD)")
 colA, colB, colC, colD, colE = st.columns(5)
 colA.metric("Young Female (18–35)", youth_female)
@@ -113,7 +103,6 @@ colC.metric("Female 36+", adult_female)
 colD.metric("Male 36+", adult_male)
 colE.metric("PWD (All Genders)", pwd_count)
 
-# PWD Breakdown
 st.markdown("### ♿ PWD Breakdown (By Age + Gender)")
 colF, colG, colH, colI = st.columns(4)
 colF.metric("PWD Young Female", pwd_young_female)
@@ -121,7 +110,7 @@ colG.metric("PWD Young Male", pwd_young_male)
 colH.metric("PWD Female 36+", pwd_adult_female)
 colI.metric("PWD Male 36+", pwd_adult_male)
 
-# === 9. County-Level Summaries ===
+# === 9. Summaries by County ===
 county_summary = df_clean['Business Location'].value_counts().reset_index()
 county_summary.columns = ['County', 'Count']
 
@@ -129,47 +118,57 @@ gender_summary = df_clean.groupby(['Business Location', 'Gender of owner']).size
 age_summary = df_clean.groupby(['Business Location', 'Age Group']).size().reset_index(name='Count')
 pwd_summary = df_clean.groupby(['Business Location', 'PWD Status']).size().reset_index(name='Count')
 
-st.markdown("## 📍 County-Level Summary")
-st.dataframe(county_summary)
-st.download_button("⬇️ Download County Summary (.xlsx)", df_clean.to_excel(index=False, engine='openpyxl'), "County_Summary.xlsx")
-
-# === 10. Partial Duplicates Audit Tabs ===
-st.markdown("---")
-st.markdown("## 🔎 Partial Duplicates Audit (High-Level Cleaning)")
-audit_tab1, audit_tab2 = st.tabs([
-    f"🆔 Same ID, Different Phone ({len(same_id_diff_phone)})",
-    f"📱 Same Phone, Different ID ({len(same_phone_diff_id)})"
-])
-
+# === Helper: Convert to Excel Bytes ===
 def df_to_excel_bytes(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
     return output.getvalue()
 
-with audit_tab1:
-    st.dataframe(same_id_diff_phone)
-    st.download_button("⬇️ Download Same ID, Different Phone", df_to_excel_bytes(same_id_diff_phone), "Same_ID_Diff_Phone.xlsx")
+# === 10. Downloadable Summaries ===
+st.markdown("## 📍 County-Level Summary")
+st.dataframe(county_summary)
+st.download_button("⬇️ Download County Summary (.xlsx)", df_to_excel_bytes(county_summary), "County_Summary.xlsx")
 
-with audit_tab2:
-    st.dataframe(same_phone_diff_id)
-    st.download_button("⬇️ Download Same Phone, Different ID", df_to_excel_bytes(same_phone_diff_id), "Same_Phone_Diff_ID.xlsx")
+st.markdown("### 👩‍💼 Gender Distribution per County")
+st.dataframe(gender_summary)
+st.download_button("⬇️ Download Gender Summary (.xlsx)", df_to_excel_bytes(gender_summary), "Gender_Summary.xlsx")
 
-# === 11. Combined Excel Download ===
-excel_all = BytesIO()
-with pd.ExcelWriter(excel_all, engine='openpyxl') as writer:
-    df_clean.to_excel(writer, sheet_name="Cleaned_Data", index=False)
-    county_summary.to_excel(writer, sheet_name="County_Summary", index=False)
-    gender_summary.to_excel(writer, sheet_name="Gender_Summary", index=False)
-    age_summary.to_excel(writer, sheet_name="Age_Summary", index=False)
-    pwd_summary.to_excel(writer, sheet_name="PWD_Summary", index=False)
-    same_id_diff_phone.to_excel(writer, sheet_name="Audit_SameID_DiffPhone", index=False)
-    same_phone_diff_id.to_excel(writer, sheet_name="Audit_SamePhone_DiffID", index=False)
+st.markdown("### 🧑‍💻 Age Group Distribution (Youth vs Adult)")
+st.dataframe(age_summary)
+st.download_button("⬇️ Download Age Summary (.xlsx)", df_to_excel_bytes(age_summary), "Age_Summary.xlsx")
+
+st.markdown("### ♿ Persons with Disabilities (PWD) Summary")
+st.dataframe(pwd_summary)
+st.download_button("⬇️ Download PWD Summary (.xlsx)", df_to_excel_bytes(pwd_summary), "PWD_Summary.xlsx")
+
+# === 11. Charts ===
+st.markdown("## 📊 Visual Insights")
+st.bar_chart(data=county_summary.set_index('County'))
+st.bar_chart(data=df_clean['Gender of owner'].value_counts())
+st.bar_chart(data=df_clean['Age Group'].value_counts())
+st.bar_chart(data=df_clean['PWD Status'].value_counts())
+
+# === 12. Combined Excel Download ===
+def all_to_excel(dfs: dict):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        for name, data in dfs.items():
+            data.to_excel(writer, sheet_name=name, index=False)
+    return output.getvalue()
+
+excel_all = all_to_excel({
+    "Cleaned_Data": df_clean,
+    "County_Summary": county_summary,
+    "Gender_Summary": gender_summary,
+    "Age_Group_Summary": age_summary,
+    "PWD_Summary": pwd_summary
+})
 
 st.markdown("### 💾 Combined Download")
 st.download_button(
-    label="⬇️ Download All Summaries + Audit Reports",
-    data=excel_all.getvalue(),
-    file_name="TA_HighLevel_Cleaned_Audit_Report.xlsx",
+    label="⬇️ Download All Summaries in One Excel File",
+    data=excel_all,
+    file_name="TA_Cleaned_Data_Report_All.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
