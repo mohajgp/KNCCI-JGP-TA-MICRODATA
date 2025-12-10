@@ -240,30 +240,95 @@ with tabs[4]:
     st.download_button("⬇️ Download Complex Duplicates", df_to_excel_bytes(complex_df), "Complex_Duplicates.xlsx", key="complex_dl")
 
 # ============================================================================
-# SECTION 4: CLEANING IMPACT ANALYSIS
+# SECTION 4: CLEANING IMPACT ANALYSIS - STEP BY STEP
 # ============================================================================
 st.markdown("---")
 st.markdown("# 🧹 SECTION 4: Cleaning Impact Analysis")
 
 st.markdown("""
-### Cleaning Strategy
-**Method:** Keep FIRST occurrence of each ID+Phone combination  
-**Result:** Removes exact duplicates while preserving unique individuals
+### Cleaning Strategy Options
+Choose your cleaning approach - each step removes more duplicates:
 """)
 
-# Apply cleaning
-df_clean = df.drop_duplicates(subset=[id_col, phone_col], keep='first').copy()
+# Step-by-step cleaning to match manual Excel process
+st.markdown("### 📋 Step-by-Step Cleaning (Cumulative)")
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Before Cleaning", f"{total_raw:,}")
-col2.metric("After Cleaning", f"{len(df_clean):,}")
-col3.metric("Records Removed", f"{total_raw - len(df_clean):,}")
+# STEP 1: Remove exact duplicates
+step1_df = df.drop_duplicates(subset=[id_col, phone_col], keep='first').copy()
+step1_removed = total_raw - len(step1_df)
 
-# What remains after cleaning?
-st.markdown("### 📊 Post-Cleaning Composition")
-post_clean_reconciliation = df_clean['_duplicate_category'].value_counts().reset_index()
-post_clean_reconciliation.columns = ['Category', 'Count After Cleaning']
-st.dataframe(post_clean_reconciliation, use_container_width=True)
+# STEP 2: From step1, remove duplicate IDs
+step2_df = step1_df.drop_duplicates(subset=[id_col], keep='first').copy()
+step2_removed = len(step1_df) - len(step2_df)
+
+# STEP 3: From step2, remove duplicate phones
+step3_df = step2_df.drop_duplicates(subset=[phone_col], keep='first').copy()
+step3_removed = len(step2_df) - len(step3_df)
+
+# Display step-by-step
+cleaning_steps = pd.DataFrame({
+    'Step': [
+        '0. Raw Data',
+        '1. Remove Exact Duplicates (Same ID + Phone)',
+        '2. Remove Duplicate IDs (keep first)',
+        '3. Remove Duplicate Phones (keep first)'
+    ],
+    'Records Remaining': [
+        total_raw,
+        len(step1_df),
+        len(step2_df),
+        len(step3_df)
+    ],
+    'Removed in Step': [
+        0,
+        step1_removed,
+        step2_removed,
+        step3_removed
+    ],
+    'Cumulative Removed': [
+        0,
+        step1_removed,
+        step1_removed + step2_removed,
+        step1_removed + step2_removed + step3_removed
+    ]
+})
+
+st.dataframe(cleaning_steps, use_container_width=True)
+
+# Visual comparison
+st.markdown("### 📊 Cleaning Comparison")
+col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+col_c1.metric("Raw", f"{total_raw:,}")
+col_c2.metric("After Step 1", f"{len(step1_df):,}", f"-{step1_removed:,}")
+col_c3.metric("After Step 2", f"{len(step2_df):,}", f"-{step2_removed:,}")
+col_c4.metric("After Step 3 (Final)", f"{len(step3_df):,}", f"-{step3_removed:,}")
+
+# Let user choose which cleaned dataset to use
+st.markdown("### ⚙️ Select Cleaning Level for Analysis")
+cleaning_choice = st.radio(
+    "Which cleaned dataset should be used for demographic analysis?",
+    options=[
+        f"Step 1: Exact duplicates only ({len(step1_df):,} records)",
+        f"Step 2: + Duplicate IDs removed ({len(step2_df):,} records)",
+        f"Step 3: + Duplicate Phones removed ({len(step3_df):,} records) ✅ STRICTEST"
+    ],
+    index=2  # Default to strictest
+)
+
+# Set df_clean based on choice
+if "Step 1" in cleaning_choice:
+    df_clean = step1_df.copy()
+    cleaning_level = "Step 1 (Exact Duplicates Only)"
+elif "Step 2" in cleaning_choice:
+    df_clean = step2_df.copy()
+    cleaning_level = "Step 2 (+ Duplicate IDs)"
+else:
+    df_clean = step3_df.copy()
+    cleaning_level = "Step 3 (Strictest - All Duplicates)"
+
+st.success(f"✅ Using **{cleaning_level}** → **{len(df_clean):,}** records for analysis below")
+
+
 
 # ============================================================================
 # SECTION 5: DEMOGRAPHIC ANALYSIS (Cleaned Data)
@@ -479,13 +544,14 @@ export_sheets = {
     '5_SameID_DiffPhone': same_id_df.drop(columns=[c for c in same_id_df.columns if c.startswith('_')]),
     '6_SamePhone_DiffID': same_phone_df.drop(columns=[c for c in same_phone_df.columns if c.startswith('_')]),
     '7_Complex_Duplicates': complex_df.drop(columns=[c for c in complex_df.columns if c.startswith('_')]),
-    '8_Cleaned_Data': df_clean.drop(columns=[c for c in df_clean.columns if c.startswith('_')]),
-    '9_TA_Summary': ta_summary,
-    '10_County_Summary': county_summary,
-    '11_County_Gender': county_gender.reset_index(),
-    '12_County_Age': county_age.reset_index(),
-    '13_Age_Breakdown': age_breakdown,
-    '14_Gender_Breakdown': gender_breakdown
+    '8_Clean_Step1': step1_df.drop(columns=[c for c in step1_df.columns if c.startswith('_')]),
+    '9_Clean_Step2': step2_df.drop(columns=[c for c in step2_df.columns if c.startswith('_')]),
+    '10_Clean_Step3_Final': step3_df.drop(columns=[c for c in step3_df.columns if c.startswith('_')]),
+    '11_TA_Summary': ta_summary,
+    '12_County_Summary': county_summary,
+    '13_Cleaning_Steps': cleaning_steps,
+    '14_Age_Breakdown': age_breakdown,
+    '15_Gender_Breakdown': gender_breakdown
 }
 
 def all_to_excel(dfs: dict):
@@ -510,12 +576,20 @@ st.markdown(f"""
 |--------|-------|
 | Report Generated | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |
 | Date Range | {start_date} to {end_date} |
-| Total Raw Records | {total_raw:,} |
+| **Raw Records** | **{total_raw:,}** |
+| | |
+| **Duplicate Breakdown:** | |
 | Unique Records | {len(unique_df):,} |
 | Exact Duplicates | {len(exact_dup_df):,} |
 | Same ID, Diff Phone | {len(same_id_df):,} |
 | Same Phone, Diff ID | {len(same_phone_df):,} |
 | Complex Duplicates | {len(complex_df):,} |
-| **Final Clean Count** | **{len(df_clean):,}** |
-| Duplicate Rate | {((total_raw - len(df_clean))/total_raw*100):.1f}% |
+| | |
+| **Cleaning Steps:** | |
+| Step 1 (Exact dups removed) | {len(step1_df):,} |
+| Step 2 (+ ID dups removed) | {len(step2_df):,} |
+| Step 3 (+ Phone dups removed) | {len(step3_df):,} |
+| | |
+| **Selected for Analysis** | **{len(df_clean):,}** ({cleaning_level}) |
+| Total Duplicate Rate | {((total_raw - len(step3_df))/total_raw*100):.1f}% |
 """)
