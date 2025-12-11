@@ -4,21 +4,35 @@ from io import BytesIO
 from datetime import datetime
 import numpy as np
 
-# === Streamlit Config ===
+# =============================================================================
+# STREAMLIT CONFIG
+# =============================================================================
 st.set_page_config(page_title="KNCCI TA Microdata Analysis", layout="wide")
-st.title("📊 Jiinue Growth Program - Comprehensive Data Analysis Report")
 
-# === 1. Google Sheet link ===
-sheet_url = "https://docs.google.com/spreadsheets/d/1LDPRGnR5jlzIMP6RJ9gAcB5m91OO_Wf_1_4liYtVPYM/edit?usp=sharing"
-csv_url = sheet_url.replace("/edit?usp=sharing", "/export?format=csv")
+st.title("📊 Jiinue Growth Program - TA Microdata Analysis & Audit Portal")
 
-# === 2. Load Data ===
+# =============================================================================
+# 1. DATA LOADING
+# =============================================================================
+
+# Google Sheet link
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1LDPRGnR5jlzIMP6RJ9gAcB5m91OO_Wf_1_4liYtVPYM/edit?usp=sharing"
+CSV_URL = SHEET_URL.replace("/edit?usp=sharing", "/export?format=csv")
+
 @st.cache_data(ttl=300)
 def load_data():
-    df = pd.read_csv(csv_url)
+    df = pd.read_csv(CSV_URL)
     df.columns = df.columns.str.strip()
+    # Standardize timestamp
+    if 'Timestamp' in df.columns:
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+    elif 'Training date' in df.columns:
+        df['Timestamp'] = pd.to_datetime(df['Training date'], errors='coerce')
+    else:
+        df['Timestamp'] = pd.NaT
     return df
 
+# Refresh button
 col_refresh, col_spacer = st.columns([1, 5])
 with col_refresh:
     if st.button("🔄 Refresh Data"):
@@ -27,94 +41,77 @@ with col_refresh:
 
 df_raw = load_data().copy()
 
-# Key columns
+# Key columns (adjust here if column names ever change)
 id_col = 'WHAT IS YOUR NATIONAL ID?'
 phone_col = 'Business phone number'
+county_col = 'Business Location'
+gender_col = 'Gender of owner'
+age_col = 'Age of owner (full years)'
+pwd_col = 'DO YOU IDENTIFY AS A PERSON WITH A DISABILITY? (THIS QUESTION IS OPTIONAL AND YOUR RESPONSE WILL NOT AFFECT YOUR ELIGIBILITY FOR THE PROGRAM.)'
 
-# Ensure date column exists
-if 'Timestamp' in df_raw.columns:
-    df_raw['Timestamp'] = pd.to_datetime(df_raw['Timestamp'], errors='coerce')
-elif 'Training date' in df_raw.columns:
-    df_raw['Timestamp'] = pd.to_datetime(df_raw['Training date'], errors='coerce')
-else:
-    df_raw['Timestamp'] = pd.NaT
+# =============================================================================
+# 2. GLOBAL SIDEBAR FILTERS (DATE + COUNTY + CLEANING LEVEL)
+# =============================================================================
 
-# === 3. Sidebar Filters ===
 st.sidebar.header("📅 Date Filters")
 min_date = df_raw['Timestamp'].min()
 max_date = df_raw['Timestamp'].max()
 
-start_date = st.sidebar.date_input("Start Date", min_date.date() if pd.notnull(min_date) else datetime.now().date())
-end_date = st.sidebar.date_input("End Date", max_date.date() if pd.notnull(max_date) else datetime.now().date())
+start_date = st.sidebar.date_input(
+    "Start Date",
+    min_date.date() if pd.notnull(min_date) else datetime.now().date()
+)
+end_date = st.sidebar.date_input(
+    "End Date",
+    max_date.date() if pd.notnull(max_date) else datetime.now().date()
+)
 
-# Filter by date
-df = df_raw[(df_raw['Timestamp'].dt.date >= start_date) & (df_raw['Timestamp'].dt.date <= end_date)].copy()
+df = df_raw[(df_raw['Timestamp'].dt.date >= start_date) &
+            (df_raw['Timestamp'].dt.date <= end_date)].copy()
 
-# Helper function
-def df_to_excel_bytes(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
-    return output.getvalue()
-
-# ============================================================================
-# SECTION 1: RAW DATA OVERVIEW
-# ============================================================================
-st.markdown("---")
-st.markdown("# 📋 SECTION 1: Raw Data Overview")
+st.sidebar.header("📍 County Filter")
+if county_col in df.columns:
+    all_counties = sorted(df[county_col].dropna().unique())
+    selected_counties = st.sidebar.multiselect(
+        "Select County (leave empty for ALL)",
+        options=all_counties,
+        default=[]
+    )
+    if selected_counties:
+        df = df[df[county_col].isin(selected_counties)]
+else:
+    st.sidebar.warning(f"Column '{county_col}' not found in data.")
 
 total_raw = len(df)
-st.metric("Total Raw Records", total_raw)
 
-# Column inventory
-st.markdown("### 📑 Data Columns Available")
-col_info = pd.DataFrame({
-    'Column Name': df.columns,
-    'Non-Null Count': [df[col].notna().sum() for col in df.columns],
-    'Null Count': [df[col].isna().sum() for col in df.columns],
-    'Unique Values': [df[col].nunique() for col in df.columns],
-    'Sample Value': [str(df[col].dropna().iloc[0])[:50] if df[col].notna().any() else 'N/A' for col in df.columns]
-})
-st.dataframe(col_info, use_container_width=True, height=300)
+# Helper: Excel export
+def df_to_excel_bytes(df_in):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_in.to_excel(writer, index=False)
+    return output.getvalue()
 
-# ============================================================================
-# SECTION 2: DUPLICATE ANALYSIS - COMPLETE RECONCILIATION
-# ============================================================================
-st.markdown("---")
-st.markdown("# 🔍 SECTION 2: Duplicate Analysis & Reconciliation")
+# =============================================================================
+# 3. DUPLICATE CLASSIFICATION (RUN ONCE, USED BY MULTIPLE SECTIONS)
+# =============================================================================
 
-st.markdown("""
-### Methodology
-We categorize every record into ONE of the following mutually exclusive categories:
-1. **Unique Records** - No duplicate ID or Phone
-2. **Exact Duplicates** - Same ID AND Same Phone (keeping first occurrence)
-3. **Same ID, Different Phone** - Potential re-registration with new phone
-4. **Same Phone, Different ID** - Shared phone or data entry error
-5. **Complex Duplicates** - Records that fall into multiple duplicate categories
-""")
+# Row id for tracking (if needed later)
+df['_row_id'] = range(len(df))
 
-# Create duplicate flags for each record
-df['_row_id'] = range(len(df))  # Track original row
-
-# Flag: Is this ID duplicated anywhere?
+# Flags
 df['_id_duplicated'] = df.duplicated(subset=[id_col], keep=False)
-
-# Flag: Is this Phone duplicated anywhere?
 df['_phone_duplicated'] = df.duplicated(subset=[phone_col], keep=False)
-
-# Flag: Is this exact ID+Phone combo duplicated?
 df['_exact_duplicated'] = df.duplicated(subset=[id_col, phone_col], keep=False)
 
-# Now categorize each record
 def categorize_record(row):
     id_dup = row['_id_duplicated']
     phone_dup = row['_phone_duplicated']
     exact_dup = row['_exact_duplicated']
-    
+
     if not id_dup and not phone_dup:
         return 'Unique'
     elif exact_dup and not (id_dup and not exact_dup) and not (phone_dup and not exact_dup):
-        # Only exact duplicate, no cross-duplicates
+        # Pure exact duplicate pattern
         return 'Exact Duplicate (Same ID + Phone)'
     elif id_dup and not phone_dup:
         return 'Same ID, Different Phone'
@@ -130,128 +127,22 @@ def categorize_record(row):
 
 df['_duplicate_category'] = df.apply(categorize_record, axis=1)
 
-# === RECONCILIATION TABLE ===
-st.markdown("### 📊 Complete Reconciliation Table")
+# Category subsets
+unique_df = df[df['_duplicate_category'] == 'Unique']
+exact_dup_df = df[df['_duplicate_category'] == 'Exact Duplicate (Same ID + Phone)']
+same_id_df = df[df['_duplicate_category'] == 'Same ID, Different Phone']
+same_phone_df = df[df['_duplicate_category'] == 'Same Phone, Different ID']
+complex_df = df[df['_duplicate_category'] == 'Complex (ID & Phone both duplicated separately)']
 
+# Reconciliation table
 reconciliation = df['_duplicate_category'].value_counts().reset_index()
 reconciliation.columns = ['Category', 'Record Count']
 reconciliation['Percentage'] = (reconciliation['Record Count'] / total_raw * 100).round(2)
-
-# Add running total
 reconciliation['Cumulative'] = reconciliation['Record Count'].cumsum()
 
-st.dataframe(reconciliation, use_container_width=True)
-
-# Verification
-total_categorized = reconciliation['Record Count'].sum()
-st.markdown(f"""
-### ✅ Verification
-- **Total Raw Records:** {total_raw:,}
-- **Total Categorized:** {total_categorized:,}
-- **Difference:** {total_raw - total_categorized} {'✅ BALANCED' if total_raw == total_categorized else '❌ MISMATCH'}
-""")
-
-# Visual breakdown
-st.markdown("### 📈 Visual Breakdown")
-st.bar_chart(reconciliation.set_index('Category')['Record Count'])
-
-# ============================================================================
-# SECTION 3: DETAILED DUPLICATE BREAKDOWN
-# ============================================================================
-st.markdown("---")
-st.markdown("# 📑 SECTION 3: Detailed Duplicate Breakdown")
-
-# Tabs for each category
-tabs = st.tabs([
-    "Unique Records",
-    "Exact Duplicates", 
-    "Same ID, Diff Phone",
-    "Same Phone, Diff ID",
-    "Complex Duplicates"
-])
-
-# Key display columns
-display_cols = [id_col, phone_col, 'Gender of owner', 'Age of owner (full years)', 
-                'Business Location', 'Timestamp', '_duplicate_category']
-display_cols = [c for c in display_cols if c in df.columns]
-
-with tabs[0]:
-    unique_df = df[df['_duplicate_category'] == 'Unique']
-    st.markdown(f"### Unique Records: {len(unique_df):,}")
-    st.info("These records have no duplicate IDs or phone numbers - clean data.")
-    st.dataframe(unique_df[display_cols].head(100), use_container_width=True)
-    st.download_button("⬇️ Download Unique Records", df_to_excel_bytes(unique_df), "Unique_Records.xlsx", key="unique_dl")
-
-with tabs[1]:
-    exact_dup_df = df[df['_duplicate_category'] == 'Exact Duplicate (Same ID + Phone)']
-    st.markdown(f"### Exact Duplicates: {len(exact_dup_df):,}")
-    st.warning("Same person submitted multiple times with same ID and phone.")
-    
-    # Group to show duplicate sets
-    if len(exact_dup_df) > 0:
-        exact_sorted = exact_dup_df.sort_values([id_col, phone_col, 'Timestamp'])
-        st.dataframe(exact_sorted[display_cols], use_container_width=True, height=400)
-        
-        # Summary: How many duplicate sets?
-        dup_sets = exact_dup_df.groupby([id_col, phone_col]).size().reset_index(name='Count')
-        st.markdown(f"**Unique ID+Phone combos with duplicates:** {len(dup_sets)}")
-        st.markdown(f"**Average duplicates per combo:** {dup_sets['Count'].mean():.1f}")
-    
-    st.download_button("⬇️ Download Exact Duplicates", df_to_excel_bytes(exact_dup_df), "Exact_Duplicates.xlsx", key="exact_dl")
-
-with tabs[2]:
-    same_id_df = df[df['_duplicate_category'] == 'Same ID, Different Phone']
-    st.markdown(f"### Same ID, Different Phone: {len(same_id_df):,}")
-    st.warning("⚠️ Same National ID registered with different phone numbers.")
-    
-    if len(same_id_df) > 0:
-        same_id_sorted = same_id_df.sort_values([id_col, 'Timestamp'])
-        st.dataframe(same_id_sorted[display_cols], use_container_width=True, height=400)
-        
-        # Summary
-        affected_ids = same_id_df[id_col].nunique()
-        st.markdown(f"**Unique IDs affected:** {affected_ids}")
-    
-    st.download_button("⬇️ Download Same ID Diff Phone", df_to_excel_bytes(same_id_df), "SameID_DiffPhone.xlsx", key="sameid_dl")
-
-with tabs[3]:
-    same_phone_df = df[df['_duplicate_category'] == 'Same Phone, Different ID']
-    st.markdown(f"### Same Phone, Different ID: {len(same_phone_df):,}")
-    st.error("🚨 Different National IDs sharing the same phone - potential fraud or shared device.")
-    
-    if len(same_phone_df) > 0:
-        same_phone_sorted = same_phone_df.sort_values([phone_col, 'Timestamp'])
-        st.dataframe(same_phone_sorted[display_cols], use_container_width=True, height=400)
-        
-        # Summary
-        affected_phones = same_phone_df[phone_col].nunique()
-        st.markdown(f"**Unique Phones affected:** {affected_phones}")
-    
-    st.download_button("⬇️ Download Same Phone Diff ID", df_to_excel_bytes(same_phone_df), "SamePhone_DiffID.xlsx", key="samephone_dl")
-
-with tabs[4]:
-    complex_df = df[df['_duplicate_category'] == 'Complex (ID & Phone both duplicated separately)']
-    st.markdown(f"### Complex Duplicates: {len(complex_df):,}")
-    st.error("🔴 These records have BOTH their ID and Phone duplicated in different combinations.")
-    
-    if len(complex_df) > 0:
-        st.dataframe(complex_df[display_cols], use_container_width=True, height=400)
-    
-    st.download_button("⬇️ Download Complex Duplicates", df_to_excel_bytes(complex_df), "Complex_Duplicates.xlsx", key="complex_dl")
-
-# ============================================================================
-# SECTION 4: CLEANING IMPACT ANALYSIS - STEP BY STEP
-# ============================================================================
-st.markdown("---")
-st.markdown("# 🧹 SECTION 4: Cleaning Impact Analysis")
-
-st.markdown("""
-### Cleaning Strategy Options
-Choose your cleaning approach - each step removes more duplicates:
-""")
-
-# Step-by-step cleaning to match manual Excel process
-st.markdown("### 📋 Step-by-Step Cleaning (Cumulative)")
+# =============================================================================
+# 4. CLEANING STEPS (STRICT PIPELINE)
+# =============================================================================
 
 # STEP 1: Remove exact duplicates
 step1_df = df.drop_duplicates(subset=[id_col, phone_col], keep='first').copy()
@@ -265,7 +156,6 @@ step2_removed = len(step1_df) - len(step2_df)
 step3_df = step2_df.drop_duplicates(subset=[phone_col], keep='first').copy()
 step3_removed = len(step2_df) - len(step3_df)
 
-# Display step-by-step
 cleaning_steps = pd.DataFrame({
     'Step': [
         '0. Raw Data',
@@ -293,29 +183,18 @@ cleaning_steps = pd.DataFrame({
     ]
 })
 
-st.dataframe(cleaning_steps, use_container_width=True)
-
-# Visual comparison
-st.markdown("### 📊 Cleaning Comparison")
-col_c1, col_c2, col_c3, col_c4 = st.columns(4)
-col_c1.metric("Raw", f"{total_raw:,}")
-col_c2.metric("After Step 1", f"{len(step1_df):,}", f"-{step1_removed:,}")
-col_c3.metric("After Step 2", f"{len(step2_df):,}", f"-{step2_removed:,}")
-col_c4.metric("After Step 3 (Final)", f"{len(step3_df):,}", f"-{step3_removed:,}")
-
-# Let user choose which cleaned dataset to use
-st.markdown("### ⚙️ Select Cleaning Level for Analysis")
-cleaning_choice = st.radio(
-    "Which cleaned dataset should be used for demographic analysis?",
+# Cleaning level selector (sidebar so it’s global)
+st.sidebar.header("🧹 Cleaning Level")
+cleaning_choice = st.sidebar.radio(
+    "Select cleaned dataset for analysis",
     options=[
         f"Step 1: Exact duplicates only ({len(step1_df):,} records)",
         f"Step 2: + Duplicate IDs removed ({len(step2_df):,} records)",
-        f"Step 3: + Duplicate Phones removed ({len(step3_df):,} records) ✅ STRICTEST"
+        f"Step 3: + Duplicate Phones removed ({len(step3_df):,} records) [Recommended]"
     ],
-    index=2  # Default to strictest
+    index=2
 )
 
-# Set df_clean based on choice
 if "Step 1" in cleaning_choice:
     df_clean = step1_df.copy()
     cleaning_level = "Step 1 (Exact Duplicates Only)"
@@ -326,20 +205,16 @@ else:
     df_clean = step3_df.copy()
     cleaning_level = "Step 3 (Strictest - All Duplicates)"
 
-st.success(f"✅ Using **{cleaning_level}** → **{len(df_clean):,}** records for analysis below")
+# =============================================================================
+# 5. DEMOGRAPHIC PREPROCESS (ON CLEAN DATA)
+# =============================================================================
 
+# Age
+if age_col in df_clean.columns:
+    df_clean[age_col] = pd.to_numeric(df_clean[age_col], errors='coerce')
+else:
+    df_clean[age_col] = np.nan
 
-
-# ============================================================================
-# SECTION 5: DEMOGRAPHIC ANALYSIS (Cleaned Data)
-# ============================================================================
-st.markdown("---")
-st.markdown("# 👥 SECTION 5: Demographic Analysis (Cleaned Data)")
-
-# Process demographics
-df_clean['Age of owner (full years)'] = pd.to_numeric(df_clean['Age of owner (full years)'], errors='coerce')
-
-# Age classification
 def classify_age(x):
     if pd.isna(x):
         return 'Unknown/Missing'
@@ -352,13 +227,15 @@ def classify_age(x):
     else:
         return 'Unknown/Missing'
 
-df_clean['Age Group'] = df_clean['Age of owner (full years)'].apply(classify_age)
+df_clean['Age Group'] = df_clean[age_col].apply(classify_age)
 
 # Gender normalization
-df_clean['gender_norm'] = df_clean['Gender of owner'].astype(str).str.lower().str.strip()
+if gender_col in df_clean.columns:
+    df_clean['gender_norm'] = df_clean[gender_col].astype(str).str.lower().str.strip()
+else:
+    df_clean['gender_norm'] = ""
 
-# PWD Status
-pwd_col = 'DO YOU IDENTIFY AS A PERSON WITH A DISABILITY? (THIS QUESTION IS OPTIONAL AND YOUR RESPONSE WILL NOT AFFECT YOUR ELIGIBILITY FOR THE PROGRAM.)'
+# PWD normalization
 if pwd_col in df_clean.columns:
     df_clean['PWD Status'] = df_clean[pwd_col].astype(str).str.strip().str.lower().apply(
         lambda x: 'Yes' if 'yes' in str(x) else ('No' if 'no' in str(x) else 'Unspecified')
@@ -366,49 +243,25 @@ if pwd_col in df_clean.columns:
 else:
     df_clean['PWD Status'] = 'Unspecified'
 
-# === AGE ANALYSIS ===
-st.markdown("### 🎂 Age Distribution")
-
-age_stats = df_clean['Age of owner (full years)'].describe()
-col_a1, col_a2, col_a3, col_a4 = st.columns(4)
-col_a1.metric("Min Age", f"{age_stats['min']:.0f}" if pd.notna(age_stats['min']) else "N/A")
-col_a2.metric("Max Age", f"{age_stats['max']:.0f}" if pd.notna(age_stats['max']) else "N/A")
-col_a3.metric("Mean Age", f"{age_stats['mean']:.1f}" if pd.notna(age_stats['mean']) else "N/A")
-col_a4.metric("Missing Ages", f"{df_clean['Age of owner (full years)'].isna().sum():,}")
-
+# Age breakdown
 age_breakdown = df_clean['Age Group'].value_counts().reset_index()
 age_breakdown.columns = ['Age Group', 'Count']
 age_breakdown['Percentage'] = (age_breakdown['Count'] / len(df_clean) * 100).round(2)
-st.dataframe(age_breakdown, use_container_width=True)
-st.bar_chart(age_breakdown.set_index('Age Group')['Count'])
 
-# === GENDER ANALYSIS ===
-st.markdown("### 👫 Gender Distribution")
+# Gender breakdown
+if gender_col in df_clean.columns:
+    gender_breakdown = df_clean[gender_col].value_counts().reset_index()
+    gender_breakdown.columns = ['Gender', 'Count']
+    gender_breakdown['Percentage'] = (gender_breakdown['Count'] / len(df_clean) * 100).round(2)
+else:
+    gender_breakdown = pd.DataFrame(columns=['Gender', 'Count', 'Percentage'])
 
-gender_breakdown = df_clean['Gender of owner'].value_counts().reset_index()
-gender_breakdown.columns = ['Gender', 'Count']
-gender_breakdown['Percentage'] = (gender_breakdown['Count'] / len(df_clean) * 100).round(2)
-st.dataframe(gender_breakdown, use_container_width=True)
-st.bar_chart(gender_breakdown.set_index('Gender')['Count'])
-
-# === PWD ANALYSIS ===
-st.markdown("### ♿ PWD Status Distribution")
-
+# PWD breakdown
 pwd_breakdown = df_clean['PWD Status'].value_counts().reset_index()
 pwd_breakdown.columns = ['PWD Status', 'Count']
 pwd_breakdown['Percentage'] = (pwd_breakdown['Count'] / len(df_clean) * 100).round(2)
-st.dataframe(pwd_breakdown, use_container_width=True)
 
-# === CROSS-TABULATION ===
-st.markdown("### 📊 Cross-Tabulation: Age × Gender")
-
-cross_tab = pd.crosstab(df_clean['Age Group'], df_clean['Gender of owner'], margins=True)
-st.dataframe(cross_tab, use_container_width=True)
-
-# === TA INDICATOR SUMMARY ===
-st.markdown("### 🎯 TA Indicator Summary (USAID Format)")
-
-# Calculate indicators
+# TA indicator summary
 is_female = df_clean['gender_norm'].str.contains('female', na=False)
 is_male = ~is_female & df_clean['gender_norm'].str.contains('male', na=False)
 is_youth = df_clean['Age Group'] == 'Youth (18-35)'
@@ -423,7 +276,7 @@ ta_summary = pd.DataFrame({
         'Youth (18-35)',
         'Adult (36+)',
         'Youth Female',
-        'Youth Male', 
+        'Youth Male',
         'Adult Female',
         'Adult Male',
         'PWD - Total',
@@ -451,50 +304,27 @@ ta_summary = pd.DataFrame({
 })
 ta_summary['Percentage'] = (ta_summary['Count'] / len(df_clean) * 100).round(2)
 
-st.dataframe(ta_summary, use_container_width=True, height=500)
-st.download_button("⬇️ Download TA Summary", df_to_excel_bytes(ta_summary), "TA_Indicator_Summary.xlsx", key="ta_dl")
+# County summaries (on cleaned data)
+if county_col in df_clean.columns:
+    county_summary = df_clean[county_col].value_counts().reset_index()
+    county_summary.columns = ['County', 'Participants']
+    county_summary['Percentage'] = (county_summary['Participants'] / len(df_clean) * 100).round(2)
 
-# ============================================================================
-# SECTION 6: COUNTY ANALYSIS
-# ============================================================================
-st.markdown("---")
-st.markdown("# 📍 SECTION 6: County-Level Analysis")
+    county_gender = pd.crosstab(df_clean[county_col], df_clean.get(gender_col, pd.Series()))
+    county_age = pd.crosstab(df_clean[county_col], df_clean['Age Group'])
+    county_pwd = pd.crosstab(df_clean[county_col], df_clean['PWD Status'])
+else:
+    county_summary = pd.DataFrame(columns=['County', 'Participants', 'Percentage'])
+    county_gender = pd.DataFrame()
+    county_age = pd.DataFrame()
+    county_pwd = pd.DataFrame()
 
-county_col = 'Business Location'
-
-# County summary
-county_summary = df_clean[county_col].value_counts().reset_index()
-county_summary.columns = ['County', 'Participants']
-county_summary['Percentage'] = (county_summary['Participants'] / len(df_clean) * 100).round(2)
-
-st.dataframe(county_summary, use_container_width=True)
-st.bar_chart(county_summary.set_index('County')['Participants'])
-
-# County × Gender
-st.markdown("### County × Gender")
-county_gender = pd.crosstab(df_clean[county_col], df_clean['Gender of owner'])
-st.dataframe(county_gender, use_container_width=True)
-
-# County × Age Group
-st.markdown("### County × Age Group")
-county_age = pd.crosstab(df_clean[county_col], df_clean['Age Group'])
-st.dataframe(county_age, use_container_width=True)
-
-# County × PWD
-st.markdown("### County × PWD Status")
-county_pwd = pd.crosstab(df_clean[county_col], df_clean['PWD Status'])
-st.dataframe(county_pwd, use_container_width=True)
-
-# ============================================================================
-# SECTION 7: DATA QUALITY REPORT
-# ============================================================================
-st.markdown("---")
-st.markdown("# 🔬 SECTION 7: Data Quality Report")
+# =============================================================================
+# 6. DATA QUALITY CHECKS (ON CLEANED DATA)
+# =============================================================================
 
 quality_issues = []
-
-# Check for missing critical fields
-critical_fields = [id_col, phone_col, 'Gender of owner', 'Age of owner (full years)', county_col]
+critical_fields = [id_col, phone_col, gender_col, age_col, county_col]
 for field in critical_fields:
     if field in df_clean.columns:
         missing = df_clean[field].isna().sum()
@@ -502,42 +332,35 @@ for field in critical_fields:
             quality_issues.append({
                 'Issue': f'Missing {field}',
                 'Count': missing,
-                'Percentage': round(missing/len(df_clean)*100, 2)
+                'Percentage': round(missing / len(df_clean) * 100, 2)
             })
 
-# Check for invalid ages
-invalid_ages = df_clean[(df_clean['Age of owner (full years)'] < 0) | (df_clean['Age of owner (full years)'] > 120)]
+# Invalid ages
+invalid_ages = df_clean[(df_clean[age_col] < 0) | (df_clean[age_col] > 120)]
 if len(invalid_ages) > 0:
     quality_issues.append({
         'Issue': 'Invalid Age (< 0 or > 120)',
         'Count': len(invalid_ages),
-        'Percentage': round(len(invalid_ages)/len(df_clean)*100, 2)
+        'Percentage': round(len(invalid_ages) / len(df_clean) * 100, 2)
     })
 
-# Check for under 18
-under_18 = df_clean[df_clean['Age of owner (full years)'] < 18]
+# Under 18
+under_18 = df_clean[df_clean[age_col] < 18]
 if len(under_18) > 0:
     quality_issues.append({
         'Issue': 'Under 18 Years Old',
         'Count': len(under_18),
-        'Percentage': round(len(under_18)/len(df_clean)*100, 2)
+        'Percentage': round(len(under_18) / len(df_clean) * 100, 2)
     })
 
 quality_df = pd.DataFrame(quality_issues)
-if len(quality_df) > 0:
-    st.dataframe(quality_df, use_container_width=True)
-else:
-    st.success("✅ No major data quality issues detected!")
 
-# ============================================================================
-# SECTION 8: FULL EXPORT
-# ============================================================================
-st.markdown("---")
-st.markdown("# 💾 SECTION 8: Download Complete Report")
+# =============================================================================
+# 7. EXPORT PACKAGE (MULTI-SHEET EXCEL)
+# =============================================================================
 
-# Prepare all sheets
 export_sheets = {
-    '1_Raw_Data': df.drop(columns=[c for c in df.columns if c.startswith('_')]),
+    '1_Raw_Filtered': df.drop(columns=[c for c in df.columns if c.startswith('_')]),
     '2_Reconciliation': reconciliation,
     '3_Unique_Records': unique_df.drop(columns=[c for c in unique_df.columns if c.startswith('_')]),
     '4_Exact_Duplicates': exact_dup_df.drop(columns=[c for c in exact_dup_df.columns if c.startswith('_')]),
@@ -551,7 +374,8 @@ export_sheets = {
     '12_County_Summary': county_summary,
     '13_Cleaning_Steps': cleaning_steps,
     '14_Age_Breakdown': age_breakdown,
-    '15_Gender_Breakdown': gender_breakdown
+    '15_Gender_Breakdown': gender_breakdown,
+    '16_Data_Quality': quality_df
 }
 
 def all_to_excel(dfs: dict):
@@ -561,35 +385,290 @@ def all_to_excel(dfs: dict):
             data.to_excel(writer, sheet_name=sheet[:31], index=False)
     return output.getvalue()
 
-st.download_button(
-    "📥 Download Complete Analysis Report (All Sheets)",
-    data=all_to_excel(export_sheets),
-    file_name=f"KNCCI_TA_Complete_Analysis_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# =============================================================================
+# 8. "PAGES" INSIDE SINGLE FILE (SECTION SELECTOR)
+# =============================================================================
+
+section = st.sidebar.selectbox(
+    "📚 Select Section",
+    [
+        "1️⃣ Raw Data Overview",
+        "2️⃣ Duplicate Summary",
+        "3️⃣ Duplicate Detail (Audit by County)",
+        "4️⃣ Cleaning Impact",
+        "5️⃣ Demographic & TA Indicators",
+        "6️⃣ County Analysis",
+        "7️⃣ Data Quality Report",
+        "8️⃣ Export & Report Snapshot"
+    ]
 )
 
-# Final summary
-st.markdown("---")
-st.markdown("### 📋 Report Summary")
-st.markdown(f"""
+# =============================================================================
+# SECTION 1: RAW DATA OVERVIEW
+# =============================================================================
+if section == "1️⃣ Raw Data Overview":
+    st.markdown("## 📋 SECTION 1: Raw Data Overview")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Raw Records (after filters)", f"{total_raw:,}")
+    col2.metric("Current Cleaning Level", cleaning_level)
+    col3.metric("Records Used for Analysis", f"{len(df_clean):,}")
+
+    st.markdown("### 📑 Column Inventory")
+    col_info = pd.DataFrame({
+        'Column Name': df.columns,
+        'Non-Null Count': [df[col].notna().sum() for col in df.columns],
+        'Null Count': [df[col].isna().sum() for col in df.columns],
+        'Unique Values': [df[col].nunique() for col in df.columns],
+        'Sample Value': [str(df[col].dropna().iloc[0])[:50] if df[col].notna().any() else 'N/A'
+                         for col in df.columns]
+    })
+    st.dataframe(col_info, use_container_width=True, height=350)
+
+# =============================================================================
+# SECTION 2: DUPLICATE SUMMARY
+# =============================================================================
+elif section == "2️⃣ Duplicate Summary":
+    st.markdown("## 🔍 SECTION 2: Duplicate Analysis & Reconciliation")
+
+    st.markdown("""
+**Methodology:**  
+Each record is assigned to exactly one category (Unique, Exact Duplicate, Same ID Diff Phone, Same Phone Diff ID, Complex).  
+The sum of all categories = total filtered records.
+""")
+
+    st.markdown("### 📊 Reconciliation Table")
+    st.dataframe(reconciliation, use_container_width=True)
+
+    total_categorized = reconciliation['Record Count'].sum()
+    st.markdown(f"""
+**Verification**  
+- Total Raw Records (filtered): **{total_raw:,}**  
+- Total Categorized: **{total_categorized:,}**  
+- Difference: **{total_raw - total_categorized}** → {"✅ BALANCED" if total_raw == total_categorized else "❌ MISMATCH"}
+""")
+
+    st.markdown("### 📈 Visual Breakdown")
+    st.bar_chart(reconciliation.set_index('Category')['Record Count'])
+
+# =============================================================================
+# SECTION 3: DUPLICATE DETAIL (AUDIT)
+# =============================================================================
+elif section == "3️⃣ Duplicate Detail (Audit by County)":
+    st.markdown("## 📑 SECTION 3: Detailed Duplicate Breakdown & County Audit")
+
+    st.info("Use the sidebar County Filter to focus on a single county or a subset, then inspect each duplicate type.")
+
+    display_cols = [id_col, phone_col, gender_col, age_col,
+                    county_col, 'Timestamp', '_duplicate_category']
+    display_cols = [c for c in display_cols if c in df.columns]
+
+    tabs = st.tabs([
+        "Unique Records",
+        "Exact Duplicates",
+        "Same ID, Diff Phone",
+        "Same Phone, Diff ID",
+        "Complex Duplicates"
+    ])
+
+    with tabs[0]:
+        st.markdown(f"### Unique Records: {len(unique_df):,}")
+        st.dataframe(unique_df[display_cols].head(300), use_container_width=True)
+        st.download_button(
+            "⬇️ Download Unique Records",
+            df_to_excel_bytes(unique_df),
+            "Unique_Records.xlsx"
+        )
+
+    with tabs[1]:
+        st.markdown(f"### Exact Duplicates (Same ID + Phone): {len(exact_dup_df):,}")
+        if len(exact_dup_df) > 0:
+            exact_sorted = exact_dup_df.sort_values([id_col, phone_col, 'Timestamp'])
+            st.dataframe(exact_sorted[display_cols], use_container_width=True, height=400)
+
+            dup_sets = exact_dup_df.groupby([id_col, phone_col]).size().reset_index(name='Count')
+            st.markdown(f"**Distinct ID+Phone combos with duplicates:** {len(dup_sets)}")
+            st.markdown(f"**Average records per duplicate combo:** {dup_sets['Count'].mean():.1f}")
+        st.download_button(
+            "⬇️ Download Exact Duplicates",
+            df_to_excel_bytes(exact_dup_df),
+            "Exact_Duplicates.xlsx"
+        )
+
+    with tabs[2]:
+        st.markdown(f"### Same ID, Different Phone: {len(same_id_df):,}")
+        if len(same_id_df) > 0:
+            same_id_sorted = same_id_df.sort_values([id_col, 'Timestamp'])
+            st.dataframe(same_id_sorted[display_cols], use_container_width=True, height=400)
+            affected_ids = same_id_df[id_col].nunique()
+            st.markdown(f"**Unique IDs affected:** {affected_ids}")
+        st.download_button(
+            "⬇️ Download Same ID – Different Phone",
+            df_to_excel_bytes(same_id_df),
+            "SameID_DiffPhone.xlsx"
+        )
+
+    with tabs[3]:
+        st.markdown(f"### Same Phone, Different ID: {len(same_phone_df):,}")
+        if len(same_phone_df) > 0:
+            same_phone_sorted = same_phone_df.sort_values([phone_col, 'Timestamp'])
+            st.dataframe(same_phone_sorted[display_cols], use_container_width=True, height=400)
+            affected_phones = same_phone_df[phone_col].nunique()
+            st.markdown(f"**Unique Phones affected:** {affected_phones}")
+        st.download_button(
+            "⬇️ Download Same Phone – Different ID",
+            df_to_excel_bytes(same_phone_df),
+            "SamePhone_DiffID.xlsx"
+        )
+
+    with tabs[4]:
+        st.markdown(f"### Complex Duplicates: {len(complex_df):,}")
+        if len(complex_df) > 0:
+            st.dataframe(complex_df[display_cols], use_container_width=True, height=400)
+        st.download_button(
+            "⬇️ Download Complex Duplicates",
+            df_to_excel_bytes(complex_df),
+            "Complex_Duplicates.xlsx"
+        )
+
+# =============================================================================
+# SECTION 4: CLEANING IMPACT
+# =============================================================================
+elif section == "4️⃣ Cleaning Impact":
+    st.markdown("## 🧹 SECTION 4: Cleaning Impact Analysis")
+
+    st.markdown("### Step-by-Step Cleaning Overview")
+    st.dataframe(cleaning_steps, use_container_width=True)
+
+    st.markdown("### 📊 Records Remaining by Step")
+    col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+    col_c1.metric("Raw", f"{total_raw:,}")
+    col_c2.metric("After Step 1", f"{len(step1_df):,}", f"-{step1_removed:,}")
+    col_c3.metric("After Step 2", f"{len(step2_df):,}", f"-{step2_removed:,}")
+    col_c4.metric("After Step 3 (Final)", f"{len(step3_df):,}", f"-{step3_removed:,}")
+
+    total_dup_rate = (total_raw - len(step3_df)) / total_raw * 100 if total_raw > 0 else 0
+    st.markdown(f"**Total duplicate rate (strictest cleaning):** {total_dup_rate:.1f}%")
+
+# =============================================================================
+# SECTION 5: DEMOGRAPHIC & TA INDICATORS
+# =============================================================================
+elif section == "5️⃣ Demographic & TA Indicators":
+    st.markdown("## 👥 SECTION 5: Demographic Analysis & TA Indicators (Cleaned Data)")
+
+    st.markdown(f"**Cleaning Level in Use:** {cleaning_level} → **{len(df_clean):,}** records")
+
+    # Age stats
+    age_stats = df_clean[age_col].describe()
+    col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+    col_a1.metric("Min Age", f"{age_stats['min']:.0f}" if pd.notna(age_stats['min']) else "N/A")
+    col_a2.metric("Max Age", f"{age_stats['max']:.0f}" if pd.notna(age_stats['max']) else "N/A")
+    col_a3.metric("Mean Age", f"{age_stats['mean']:.1f}" if pd.notna(age_stats['mean']) else "N/A")
+    col_a4.metric("Missing Ages", f"{df_clean[age_col].isna().sum():,}")
+
+    st.markdown("### 🎂 Age Group Distribution")
+    st.dataframe(age_breakdown, use_container_width=True)
+    st.bar_chart(age_breakdown.set_index('Age Group')['Count'])
+
+    st.markdown("### 👫 Gender Distribution")
+    if not gender_breakdown.empty:
+        st.dataframe(gender_breakdown, use_container_width=True)
+        st.bar_chart(gender_breakdown.set_index('Gender')['Count'])
+    else:
+        st.info("Gender column not found in dataset.")
+
+    st.markdown("### ♿ PWD Status Distribution")
+    st.dataframe(pwd_breakdown, use_container_width=True)
+
+    st.markdown("### 🎯 TA Indicator Summary (USAID-style)")
+    st.dataframe(ta_summary, use_container_width=True, height=500)
+    st.download_button(
+        "⬇️ Download TA Summary",
+        df_to_excel_bytes(ta_summary),
+        "TA_Indicator_Summary.xlsx"
+    )
+
+# =============================================================================
+# SECTION 6: COUNTY ANALYSIS
+# =============================================================================
+elif section == "6️⃣ County Analysis":
+    st.markdown("## 📍 SECTION 6: County-Level Analysis (Cleaned Data)")
+
+    st.markdown(f"**Current Cleaning Level:** {cleaning_level}")
+    st.markdown("Use the sidebar County Filter to focus on specific counties.")
+
+    st.markdown("### County Summary")
+    st.dataframe(county_summary, use_container_width=True)
+    if not county_summary.empty:
+        st.bar_chart(county_summary.set_index('County')['Participants'])
+
+    st.markdown("### County × Gender")
+    if not county_gender.empty:
+        st.dataframe(county_gender, use_container_width=True)
+    else:
+        st.info("County × Gender table not available (missing columns).")
+
+    st.markdown("### County × Age Group")
+    if not county_age.empty:
+        st.dataframe(county_age, use_container_width=True)
+    else:
+        st.info("County × Age Group table not available.")
+
+    st.markdown("### County × PWD Status")
+    if not county_pwd.empty:
+        st.dataframe(county_pwd, use_container_width=True)
+    else:
+        st.info("County × PWD Status table not available.")
+
+# =============================================================================
+# SECTION 7: DATA QUALITY REPORT
+# =============================================================================
+elif section == "7️⃣ Data Quality Report":
+    st.markdown("## 🔬 SECTION 7: Data Quality Report (Cleaned Data)")
+
+    if not quality_df.empty:
+        st.dataframe(quality_df, use_container_width=True)
+    else:
+        st.success("✅ No major data quality issues detected based on current checks.")
+
+    st.markdown("### Under-18 Records (Flagged)")
+    if len(under_18) > 0:
+        show_cols = [id_col, phone_col, gender_col, age_col, county_col, 'Timestamp']
+        show_cols = [c for c in show_cols if c in under_18.columns]
+        st.dataframe(under_18[show_cols], use_container_width=True, height=300)
+    else:
+        st.info("No under-18 records detected in cleaned dataset.")
+
+# =============================================================================
+# SECTION 8: EXPORT & REPORT SNAPSHOT
+# =============================================================================
+elif section == "8️⃣ Export & Report Snapshot":
+    st.markdown("## 💾 SECTION 8: Export Complete Analysis & Summary Snapshot")
+
+    st.markdown("### 📥 Download Full Multi-Sheet Excel Report")
+    st.download_button(
+        "📥 Download Complete Analysis Report (All Sheets)",
+        data=all_to_excel(export_sheets),
+        file_name=f"KNCCI_TA_Complete_Analysis_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+    st.markdown("---")
+    st.markdown("### 📋 Report Summary Snapshot")
+    total_dup_rate = (total_raw - len(step3_df)) / total_raw * 100 if total_raw > 0 else 0
+
+    st.markdown(f"""
 | Metric | Value |
 |--------|-------|
 | Report Generated | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |
 | Date Range | {start_date} to {end_date} |
-| **Raw Records** | **{total_raw:,}** |
-| | |
-| **Duplicate Breakdown:** | |
+| **Raw Records (after filters)** | **{total_raw:,}** |
+| **Cleaning Level in Use** | **{cleaning_level}** |
+| Records Used for Analysis | **{len(df_clean):,}** |
+| Total Duplicate Rate (Strictest) | {total_dup_rate:.1f}% |
 | Unique Records | {len(unique_df):,} |
 | Exact Duplicates | {len(exact_dup_df):,} |
 | Same ID, Diff Phone | {len(same_id_df):,} |
 | Same Phone, Diff ID | {len(same_phone_df):,} |
 | Complex Duplicates | {len(complex_df):,} |
-| | |
-| **Cleaning Steps:** | |
-| Step 1 (Exact dups removed) | {len(step1_df):,} |
-| Step 2 (+ ID dups removed) | {len(step2_df):,} |
-| Step 3 (+ Phone dups removed) | {len(step3_df):,} |
-| | |
-| **Selected for Analysis** | **{len(df_clean):,}** ({cleaning_level}) |
-| Total Duplicate Rate | {((total_raw - len(step3_df))/total_raw*100):.1f}% |
 """)
